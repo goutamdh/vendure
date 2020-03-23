@@ -115,6 +115,7 @@ export type Asset = Node & {
     height: Scalars['Int'];
     source: Scalars['String'];
     preview: Scalars['String'];
+    focalPoint?: Maybe<Coordinate>;
 };
 
 export type AssetFilterParameter = {
@@ -335,6 +336,17 @@ export type ConfigurableOperationDefinition = {
 export type ConfigurableOperationInput = {
     code: Scalars['String'];
     arguments: Array<ConfigArgInput>;
+};
+
+export type Coordinate = {
+    __typename?: 'Coordinate';
+    x: Scalars['Float'];
+    y: Scalars['Float'];
+};
+
+export type CoordinateInput = {
+    x: Scalars['Float'];
+    y: Scalars['Float'];
 };
 
 export type Country = Node & {
@@ -1692,6 +1704,8 @@ export type Mutation = {
     assignRoleToAdministrator: Administrator;
     /** Create a new Asset */
     createAssets: Array<Asset>;
+    /** Update an existing Asset */
+    updateAsset: Asset;
     login: LoginResult;
     logout: Scalars['Boolean'];
     /** Create a new Channel */
@@ -1804,10 +1818,14 @@ export type Mutation = {
     createTaxCategory: TaxCategory;
     /** Update an existing TaxCategory */
     updateTaxCategory: TaxCategory;
+    /** Deletes a TaxCategory */
+    deleteTaxCategory: DeletionResponse;
     /** Create a new TaxRate */
     createTaxRate: TaxRate;
     /** Update an existing TaxRate */
     updateTaxRate: TaxRate;
+    /** Delete a TaxRate */
+    deleteTaxRate: DeletionResponse;
     /** Create a new Zone */
     createZone: Zone;
     /** Update an existing Zone */
@@ -1835,6 +1853,10 @@ export type MutationAssignRoleToAdministratorArgs = {
 
 export type MutationCreateAssetsArgs = {
     input: Array<CreateAssetInput>;
+};
+
+export type MutationUpdateAssetArgs = {
+    input: UpdateAssetInput;
 };
 
 export type MutationLoginArgs = {
@@ -2091,12 +2113,20 @@ export type MutationUpdateTaxCategoryArgs = {
     input: UpdateTaxCategoryInput;
 };
 
+export type MutationDeleteTaxCategoryArgs = {
+    id: Scalars['ID'];
+};
+
 export type MutationCreateTaxRateArgs = {
     input: CreateTaxRateInput;
 };
 
 export type MutationUpdateTaxRateArgs = {
     input: UpdateTaxRateInput;
+};
+
+export type MutationDeleteTaxRateArgs = {
+    id: Scalars['ID'];
 };
 
 export type MutationCreateZoneArgs = {
@@ -2648,7 +2678,9 @@ export type Query = {
     __typename?: 'Query';
     administrators: AdministratorList;
     administrator?: Maybe<Administrator>;
+    /** Get a list of Assets */
     assets: AssetList;
+    /** Get a single Asset by id */
     asset?: Maybe<Asset>;
     me?: Maybe<CurrentUser>;
     channels: Array<Channel>;
@@ -2973,9 +3005,11 @@ export type SearchResult = {
     productId: Scalars['ID'];
     productName: Scalars['String'];
     productPreview: Scalars['String'];
+    productAsset?: Maybe<SearchResultAsset>;
     productVariantId: Scalars['ID'];
     productVariantName: Scalars['String'];
     productVariantPreview: Scalars['String'];
+    productVariantAsset?: Maybe<SearchResultAsset>;
     price: SearchResultPrice;
     priceWithTax: SearchResultPrice;
     currencyCode: CurrencyCode;
@@ -2986,6 +3020,13 @@ export type SearchResult = {
     collectionIds: Array<Scalars['ID']>;
     /** A relevence score for the result. Differs between database implementations */
     score: Scalars['Float'];
+};
+
+export type SearchResultAsset = {
+    __typename?: 'SearchResultAsset';
+    id: Scalars['ID'];
+    preview: Scalars['String'];
+    focalPoint?: Maybe<Coordinate>;
 };
 
 /** The price of a search result product, either as a range or as a single price */
@@ -3237,6 +3278,12 @@ export type UpdateAdministratorInput = {
     roleIds?: Maybe<Array<Scalars['ID']>>;
 };
 
+export type UpdateAssetInput = {
+    id: Scalars['ID'];
+    name?: Maybe<Scalars['String']>;
+    focalPoint?: Maybe<CoordinateInput>;
+};
+
 export type UpdateChannelInput = {
     id: Scalars['ID'];
     code?: Maybe<Scalars['String']>;
@@ -3452,6 +3499,26 @@ export type Q2QueryVariables = {};
 
 export type Q2Query = { __typename?: 'Query' } & {
     product: Maybe<{ __typename?: 'Product' } & Pick<Product, 'id' | 'name'>>;
+};
+
+export type GetAssetQueryVariables = {
+    id: Scalars['ID'];
+};
+
+export type GetAssetQuery = { __typename?: 'Query' } & {
+    asset: Maybe<{ __typename?: 'Asset' } & Pick<Asset, 'width' | 'height'> & AssetFragment>;
+};
+
+export type CreateAssetsMutationVariables = {
+    input: Array<CreateAssetInput>;
+};
+
+export type CreateAssetsMutation = { __typename?: 'Mutation' } & {
+    createAssets: Array<
+        { __typename?: 'Asset' } & {
+            focalPoint: Maybe<{ __typename?: 'Coordinate' } & Pick<Coordinate, 'x' | 'y'>>;
+        } & AssetFragment
+    >;
 };
 
 export type CanCreateCustomerMutationVariables = {
@@ -3775,6 +3842,42 @@ export type SearchFacetValuesQuery = { __typename?: 'Query' } & {
             facetValues: Array<
                 { __typename?: 'FacetValueResult' } & Pick<FacetValueResult, 'count'> & {
                         facetValue: { __typename?: 'FacetValue' } & Pick<FacetValue, 'id' | 'name'>;
+                    }
+            >;
+        };
+};
+
+export type SearchGetAssetsQueryVariables = {
+    input: SearchInput;
+};
+
+export type SearchGetAssetsQuery = { __typename?: 'Query' } & {
+    search: { __typename?: 'SearchResponse' } & Pick<SearchResponse, 'totalItems'> & {
+            items: Array<
+                { __typename?: 'SearchResult' } & Pick<
+                    SearchResult,
+                    'productId' | 'productName' | 'productVariantName'
+                > & {
+                        productAsset: Maybe<
+                            { __typename?: 'SearchResultAsset' } & Pick<
+                                SearchResultAsset,
+                                'id' | 'preview'
+                            > & {
+                                    focalPoint: Maybe<
+                                        { __typename?: 'Coordinate' } & Pick<Coordinate, 'x' | 'y'>
+                                    >;
+                                }
+                        >;
+                        productVariantAsset: Maybe<
+                            { __typename?: 'SearchResultAsset' } & Pick<
+                                SearchResultAsset,
+                                'id' | 'preview'
+                            > & {
+                                    focalPoint: Maybe<
+                                        { __typename?: 'Coordinate' } & Pick<Coordinate, 'x' | 'y'>
+                                    >;
+                                }
+                        >;
                     }
             >;
         };
@@ -4372,7 +4475,7 @@ export type GetCustomerQuery = { __typename?: 'Query' } & {
 export type AttemptLoginMutationVariables = {
     username: Scalars['String'];
     password: Scalars['String'];
-    rememberMe: Scalars['Boolean'];
+    rememberMe?: Maybe<Scalars['Boolean']>;
 };
 
 export type AttemptLoginMutation = { __typename?: 'Mutation' } & {
@@ -4492,6 +4595,16 @@ export type RemoveProductsFromChannelMutationVariables = {
 
 export type RemoveProductsFromChannelMutation = { __typename?: 'Mutation' } & {
     removeProductsFromChannel: Array<{ __typename?: 'Product' } & ProductWithVariantsFragment>;
+};
+
+export type UpdateAssetMutationVariables = {
+    input: UpdateAssetInput;
+};
+
+export type UpdateAssetMutation = { __typename?: 'Mutation' } & {
+    updateAsset: { __typename?: 'Asset' } & {
+        focalPoint: Maybe<{ __typename?: 'Coordinate' } & Pick<Coordinate, 'x' | 'y'>>;
+    } & AssetFragment;
 };
 
 export type UpdateOptionGroupMutationVariables = {
@@ -5091,6 +5204,44 @@ export type UpdateStockMutation = { __typename?: 'Mutation' } & {
     updateProductVariants: Array<Maybe<{ __typename?: 'ProductVariant' } & VariantWithStockFragment>>;
 };
 
+export type GetTaxCategoryListQueryVariables = {};
+
+export type GetTaxCategoryListQuery = { __typename?: 'Query' } & {
+    taxCategories: Array<{ __typename?: 'TaxCategory' } & Pick<TaxCategory, 'id' | 'name'>>;
+};
+
+export type GetTaxCategoryQueryVariables = {
+    id: Scalars['ID'];
+};
+
+export type GetTaxCategoryQuery = { __typename?: 'Query' } & {
+    taxCategory: Maybe<{ __typename?: 'TaxCategory' } & Pick<TaxCategory, 'id' | 'name'>>;
+};
+
+export type CreateTaxCategoryMutationVariables = {
+    input: CreateTaxCategoryInput;
+};
+
+export type CreateTaxCategoryMutation = { __typename?: 'Mutation' } & {
+    createTaxCategory: { __typename?: 'TaxCategory' } & Pick<TaxCategory, 'id' | 'name'>;
+};
+
+export type UpdateTaxCategoryMutationVariables = {
+    input: UpdateTaxCategoryInput;
+};
+
+export type UpdateTaxCategoryMutation = { __typename?: 'Mutation' } & {
+    updateTaxCategory: { __typename?: 'TaxCategory' } & Pick<TaxCategory, 'id' | 'name'>;
+};
+
+export type DeleteTaxCategoryMutationVariables = {
+    id: Scalars['ID'];
+};
+
+export type DeleteTaxCategoryMutation = { __typename?: 'Mutation' } & {
+    deleteTaxCategory: { __typename?: 'DeletionResponse' } & Pick<DeletionResponse, 'result' | 'message'>;
+};
+
 export type GetTaxRatesQueryVariables = {};
 
 export type GetTaxRatesQuery = { __typename?: 'Query' } & {
@@ -5113,6 +5264,14 @@ export type CreateTaxRateMutationVariables = {
 
 export type CreateTaxRateMutation = { __typename?: 'Mutation' } & {
     createTaxRate: { __typename?: 'TaxRate' } & TaxRateFragment;
+};
+
+export type DeleteTaxRateMutationVariables = {
+    id: Scalars['ID'];
+};
+
+export type DeleteTaxRateMutation = { __typename?: 'Mutation' } & {
+    deleteTaxRate: { __typename?: 'DeletionResponse' } & Pick<DeletionResponse, 'result' | 'message'>;
 };
 
 export type DeleteZoneMutationVariables = {
@@ -5201,6 +5360,21 @@ export namespace Q2 {
     export type Variables = Q2QueryVariables;
     export type Query = Q2Query;
     export type Product = NonNullable<Q2Query['product']>;
+}
+
+export namespace GetAsset {
+    export type Variables = GetAssetQueryVariables;
+    export type Query = GetAssetQuery;
+    export type Asset = AssetFragment;
+}
+
+export namespace CreateAssets {
+    export type Variables = CreateAssetsMutationVariables;
+    export type Mutation = CreateAssetsMutation;
+    export type CreateAssets = AssetFragment;
+    export type FocalPoint = NonNullable<
+        (NonNullable<CreateAssetsMutation['createAssets'][0]>)['focalPoint']
+    >;
 }
 
 export namespace CanCreateCustomer {
@@ -5421,6 +5595,27 @@ export namespace SearchFacetValues {
     export type Search = SearchFacetValuesQuery['search'];
     export type FacetValues = NonNullable<SearchFacetValuesQuery['search']['facetValues'][0]>;
     export type FacetValue = (NonNullable<SearchFacetValuesQuery['search']['facetValues'][0]>)['facetValue'];
+}
+
+export namespace SearchGetAssets {
+    export type Variables = SearchGetAssetsQueryVariables;
+    export type Query = SearchGetAssetsQuery;
+    export type Search = SearchGetAssetsQuery['search'];
+    export type Items = NonNullable<SearchGetAssetsQuery['search']['items'][0]>;
+    export type ProductAsset = NonNullable<
+        (NonNullable<SearchGetAssetsQuery['search']['items'][0]>)['productAsset']
+    >;
+    export type FocalPoint = NonNullable<
+        (NonNullable<(NonNullable<SearchGetAssetsQuery['search']['items'][0]>)['productAsset']>)['focalPoint']
+    >;
+    export type ProductVariantAsset = NonNullable<
+        (NonNullable<SearchGetAssetsQuery['search']['items'][0]>)['productVariantAsset']
+    >;
+    export type _FocalPoint = NonNullable<
+        (NonNullable<
+            (NonNullable<SearchGetAssetsQuery['search']['items'][0]>)['productVariantAsset']
+        >)['focalPoint']
+    >;
 }
 
 export namespace SearchGetPrices {
@@ -5901,6 +6096,13 @@ export namespace RemoveProductsFromChannel {
     export type RemoveProductsFromChannel = ProductWithVariantsFragment;
 }
 
+export namespace UpdateAsset {
+    export type Variables = UpdateAssetMutationVariables;
+    export type Mutation = UpdateAssetMutation;
+    export type UpdateAsset = AssetFragment;
+    export type FocalPoint = NonNullable<UpdateAssetMutation['updateAsset']['focalPoint']>;
+}
+
 export namespace UpdateOptionGroup {
     export type Variables = UpdateOptionGroupMutationVariables;
     export type Mutation = UpdateOptionGroupMutation;
@@ -6316,6 +6518,36 @@ export namespace UpdateStock {
     export type UpdateProductVariants = VariantWithStockFragment;
 }
 
+export namespace GetTaxCategoryList {
+    export type Variables = GetTaxCategoryListQueryVariables;
+    export type Query = GetTaxCategoryListQuery;
+    export type TaxCategories = NonNullable<GetTaxCategoryListQuery['taxCategories'][0]>;
+}
+
+export namespace GetTaxCategory {
+    export type Variables = GetTaxCategoryQueryVariables;
+    export type Query = GetTaxCategoryQuery;
+    export type TaxCategory = NonNullable<GetTaxCategoryQuery['taxCategory']>;
+}
+
+export namespace CreateTaxCategory {
+    export type Variables = CreateTaxCategoryMutationVariables;
+    export type Mutation = CreateTaxCategoryMutation;
+    export type CreateTaxCategory = CreateTaxCategoryMutation['createTaxCategory'];
+}
+
+export namespace UpdateTaxCategory {
+    export type Variables = UpdateTaxCategoryMutationVariables;
+    export type Mutation = UpdateTaxCategoryMutation;
+    export type UpdateTaxCategory = UpdateTaxCategoryMutation['updateTaxCategory'];
+}
+
+export namespace DeleteTaxCategory {
+    export type Variables = DeleteTaxCategoryMutationVariables;
+    export type Mutation = DeleteTaxCategoryMutation;
+    export type DeleteTaxCategory = DeleteTaxCategoryMutation['deleteTaxCategory'];
+}
+
 export namespace GetTaxRates {
     export type Variables = GetTaxRatesQueryVariables;
     export type Query = GetTaxRatesQuery;
@@ -6333,6 +6565,12 @@ export namespace CreateTaxRate {
     export type Variables = CreateTaxRateMutationVariables;
     export type Mutation = CreateTaxRateMutation;
     export type CreateTaxRate = TaxRateFragment;
+}
+
+export namespace DeleteTaxRate {
+    export type Variables = DeleteTaxRateMutationVariables;
+    export type Mutation = DeleteTaxRateMutation;
+    export type DeleteTaxRate = DeleteTaxRateMutation['deleteTaxRate'];
 }
 
 export namespace DeleteZone {

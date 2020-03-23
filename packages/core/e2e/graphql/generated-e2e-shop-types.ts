@@ -85,6 +85,7 @@ export type Asset = Node & {
     height: Scalars['Int'];
     source: Scalars['String'];
     preview: Scalars['String'];
+    focalPoint?: Maybe<Coordinate>;
 };
 
 export type AssetList = PaginatedList & {
@@ -248,6 +249,12 @@ export type ConfigurableOperationDefinition = {
 export type ConfigurableOperationInput = {
     code: Scalars['String'];
     arguments: Array<ConfigArgInput>;
+};
+
+export type Coordinate = {
+    __typename?: 'Coordinate';
+    x: Scalars['Float'];
+    y: Scalars['Float'];
 };
 
 export type Country = Node & {
@@ -2037,9 +2044,11 @@ export type SearchResult = {
     productId: Scalars['ID'];
     productName: Scalars['String'];
     productPreview: Scalars['String'];
+    productAsset?: Maybe<SearchResultAsset>;
     productVariantId: Scalars['ID'];
     productVariantName: Scalars['String'];
     productVariantPreview: Scalars['String'];
+    productVariantAsset?: Maybe<SearchResultAsset>;
     price: SearchResultPrice;
     priceWithTax: SearchResultPrice;
     currencyCode: CurrencyCode;
@@ -2050,6 +2059,13 @@ export type SearchResult = {
     collectionIds: Array<Scalars['ID']>;
     /** A relevence score for the result. Differs between database implementations */
     score: Scalars['Float'];
+};
+
+export type SearchResultAsset = {
+    __typename?: 'SearchResultAsset';
+    id: Scalars['ID'];
+    preview: Scalars['String'];
+    focalPoint?: Maybe<Coordinate>;
 };
 
 /** The price of a search result product, either as a range or as a single price */
@@ -2592,7 +2608,23 @@ export type GetCustomerAddressesQuery = { __typename?: 'Query' } & {
         { __typename?: 'Order' } & {
             customer: Maybe<
                 { __typename?: 'Customer' } & {
-                    addresses: Maybe<Array<{ __typename?: 'Address' } & Pick<Address, 'id'>>>;
+                    addresses: Maybe<Array<{ __typename?: 'Address' } & Pick<Address, 'id' | 'streetLine1'>>>;
+                }
+            >;
+        }
+    >;
+};
+
+export type GetCustomerOrdersQueryVariables = {};
+
+export type GetCustomerOrdersQuery = { __typename?: 'Query' } & {
+    activeOrder: Maybe<
+        { __typename?: 'Order' } & {
+            customer: Maybe<
+                { __typename?: 'Customer' } & {
+                    orders: { __typename?: 'OrderList' } & {
+                        items: Array<{ __typename?: 'Order' } & Pick<Order, 'id'>>;
+                    };
                 }
             >;
         }
@@ -2831,6 +2863,19 @@ export namespace GetCustomerAddresses {
         (NonNullable<
             (NonNullable<(NonNullable<GetCustomerAddressesQuery['activeOrder']>)['customer']>)['addresses']
         >)[0]
+    >;
+}
+
+export namespace GetCustomerOrders {
+    export type Variables = GetCustomerOrdersQueryVariables;
+    export type Query = GetCustomerOrdersQuery;
+    export type ActiveOrder = NonNullable<GetCustomerOrdersQuery['activeOrder']>;
+    export type Customer = NonNullable<(NonNullable<GetCustomerOrdersQuery['activeOrder']>)['customer']>;
+    export type Orders = (NonNullable<
+        (NonNullable<GetCustomerOrdersQuery['activeOrder']>)['customer']
+    >)['orders'];
+    export type Items = NonNullable<
+        (NonNullable<(NonNullable<GetCustomerOrdersQuery['activeOrder']>)['customer']>)['orders']['items'][0]
     >;
 }
 

@@ -4,6 +4,7 @@ import { MessagePattern } from '@nestjs/microservices';
 import { InjectConnection } from '@nestjs/typeorm';
 import { unique } from '@vendure/common/lib/unique';
 import {
+    Asset,
     asyncObservable,
     AsyncQueue,
     FacetValue,
@@ -40,6 +41,7 @@ import {
     ProductIndexItem,
     ReindexMessage,
     RemoveProductFromChannelMessage,
+    UpdateAssetMessage,
     UpdateProductMessage,
     UpdateVariantMessage,
     UpdateVariantsByIdMessage,
@@ -180,6 +182,13 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
     }: DeleteVariantMessage['data']): Observable<DeleteVariantMessage['response']> {
         const ctx = RequestContext.fromObject(rawContext);
         return asyncObservable(async () => {
+            const variants = await this.connection
+                .getRepository(ProductVariant)
+                .findByIds(variantIds, { relations: ['product'] });
+            const productIds = unique(variants.map(v => v.product.id));
+            for (const productId of productIds) {
+                await this.updateProductInternal(ctx, productId, ctx.channelId);
+            }
             await this.deleteVariantsInternal(variantIds, ctx.channelId);
             return true;
         });
@@ -260,7 +269,7 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
                 }
 
                 const qb = this.getSearchIndexQueryBuilder(ctx.channelId);
-                const count = await qb.andWhere('variants__product.deletedAt IS NULL').getCount();
+                const count = await qb.getCount();
                 Logger.verbose(`Reindexing ${count} ProductVariants`, loggerCtx);
 
                 const batches = Math.ceil(count / batchSize);
@@ -305,6 +314,61 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
         });
     }
 
+    @MessagePattern(UpdateAssetMessage.pattern)
+    updateAsset(data: UpdateAssetMessage['data']): Observable<UpdateAssetMessage['response']> {
+        return asyncObservable(async () => {
+            const result1 = await this.updateAssetForIndex(PRODUCT_INDEX_NAME, data.asset);
+            const result2 = await this.updateAssetForIndex(VARIANT_INDEX_NAME, data.asset);
+            await this.client.indices.refresh({
+                index: [
+                    this.options.indexPrefix + PRODUCT_INDEX_NAME,
+                    this.options.indexPrefix + VARIANT_INDEX_NAME,
+                ],
+            });
+            return result1 && result2;
+        });
+    }
+
+    private async updateAssetForIndex(indexName: string, asset: Asset): Promise<boolean> {
+        const focalPoint = asset.focalPoint || null;
+        const params = { focalPoint };
+        const result1 = await this.client.update_by_query({
+            index: this.options.indexPrefix + indexName,
+            body: {
+                script: {
+                    source: 'ctx._source.productPreviewFocalPoint = params.focalPoint',
+                    params,
+                },
+                query: {
+                    term: {
+                        productAssetId: asset.id,
+                    },
+                },
+            },
+        });
+        for (const failure of result1.body.failures) {
+            Logger.error(`${failure.cause.type}: ${failure.cause.reason}`, loggerCtx);
+        }
+        const result2 = await this.client.update_by_query({
+            index: this.options.indexPrefix + indexName,
+            body: {
+                script: {
+                    source: 'ctx._source.productVariantPreviewFocalPoint = params.focalPoint',
+                    params,
+                },
+                query: {
+                    term: {
+                        productVariantAssetId: asset.id,
+                    },
+                },
+            },
+        });
+        for (const failure of result1.body.failures) {
+            Logger.error(`${failure.cause.type}: ${failure.cause.reason}`, loggerCtx);
+        }
+        return result1.body.failures.length === 0 && result2.body.failures === 0;
+    }
+
     private async processVariantBatch(
         variants: ProductVariant[],
         variantsInProduct: ProductVariant[],
@@ -346,6 +410,9 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
 
         const productVariants = await this.connection.getRepository(ProductVariant).findByIds(variantIds, {
             relations: variantRelations,
+            where: {
+                deletedAt: null,
+            },
             order: {
                 id: 'ASC',
             },
@@ -384,6 +451,9 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
                 .getRepository(ProductVariant)
                 .findByIds(product.variants.map(v => v.id), {
                     relations: variantRelations,
+                    where: {
+                        deletedAt: null,
+                    },
                 });
             if (product.enabled === false) {
                 updatedProductVariants.forEach(v => (v.enabled = false));
@@ -469,7 +539,9 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
         FindOptionsUtils.joinEagerRelations(qb, qb.alias, this.connection.getMetadata(ProductVariant));
         qb.leftJoin('variants.product', '__product')
             .leftJoin('__product.channels', '__channel')
-            .where('__channel.id = :channelId', { channelId });
+            .where('__channel.id = :channelId', { channelId })
+            .andWhere('variants__product.deletedAt IS NULL')
+            .andWhere('variants.deletedAt IS NULL');
         return qb;
     }
 
@@ -481,7 +553,6 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
         const { batchSize } = this.options;
         const i = Number.parseInt(batchNumber.toString(), 10);
         const variants = await qb
-            .andWhere('variants__product.deletedAt IS NULL')
             .take(batchSize)
             .skip(i * batchSize)
             .addOrderBy('variants.id', 'ASC')
@@ -493,6 +564,9 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
     private async getVariantsByIds(ctx: RequestContext, ids: ID[]) {
         const variants = await this.connection.getRepository(ProductVariant).findByIds(ids, {
             relations: variantRelations,
+            where: {
+                deletedAt: null,
+            },
             order: {
                 id: 'ASC',
             },
@@ -509,6 +583,8 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
     }
 
     private createVariantIndexItem(v: ProductVariant, channelId: ID): VariantIndexItem {
+        const productAsset = v.product.featuredAsset;
+        const variantAsset = v.featuredAsset;
         const item: VariantIndexItem = {
             channelId,
             productVariantId: v.id as string,
@@ -516,9 +592,13 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
             slug: v.product.slug,
             productId: v.product.id as string,
             productName: v.product.name,
-            productPreview: v.product.featuredAsset ? v.product.featuredAsset.preview : '',
+            productAssetId: productAsset ? productAsset.id : null,
+            productPreview: productAsset ? productAsset.preview : '',
+            productPreviewFocalPoint: productAsset ? productAsset.focalPoint || null : null,
             productVariantName: v.name,
-            productVariantPreview: v.featuredAsset ? v.featuredAsset.preview : '',
+            productVariantAssetId: variantAsset ? variantAsset.id : null,
+            productVariantPreview: variantAsset ? variantAsset.preview : '',
+            productVariantPreviewFocalPoint: productAsset ? productAsset.focalPoint || null : null,
             price: v.price,
             priceWithTax: v.priceWithTax,
             currencyCode: v.currencyCode,
@@ -540,16 +620,24 @@ export class ElasticsearchIndexerController implements OnModuleInit, OnModuleDes
         const first = variants[0];
         const prices = variants.map(v => v.price);
         const pricesWithTax = variants.map(v => v.priceWithTax);
+        const productAsset = first.product.featuredAsset;
+        const variantAsset = variants.filter(v => v.featuredAsset).length
+            ? variants.filter(v => v.featuredAsset)[0].featuredAsset
+            : null;
         const item: ProductIndexItem = {
             channelId,
-            sku: variants.map(v => v.sku),
-            slug: variants.map(v => v.product.slug),
+            sku: first.sku,
+            slug: first.product.slug,
             productId: first.product.id,
-            productName: variants.map(v => v.product.name),
-            productPreview: first.product.featuredAsset ? first.product.featuredAsset.preview : '',
-            productVariantId: variants.map(v => v.id),
-            productVariantName: variants.map(v => v.name),
-            productVariantPreview: variants.filter(v => v.featuredAsset).map(v => v.featuredAsset.preview),
+            productName: first.product.name,
+            productAssetId: productAsset ? productAsset.id : null,
+            productPreview: productAsset ? productAsset.preview : '',
+            productPreviewFocalPoint: productAsset ? productAsset.focalPoint || null : null,
+            productVariantId: first.id,
+            productVariantName: first.name,
+            productVariantAssetId: variantAsset ? variantAsset.id : null,
+            productVariantPreview: variantAsset ? variantAsset.preview : '',
+            productVariantPreviewFocalPoint: productAsset ? productAsset.focalPoint || null : null,
             priceMin: Math.min(...prices),
             priceMax: Math.max(...prices),
             priceWithTaxMin: Math.min(...pricesWithTax),

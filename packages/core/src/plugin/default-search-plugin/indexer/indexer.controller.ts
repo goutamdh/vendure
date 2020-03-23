@@ -24,6 +24,7 @@ import {
     DeleteVariantMessage,
     ReindexMessage,
     RemoveProductFromChannelMessage,
+    UpdateAssetMessage,
     UpdateProductMessage,
     UpdateVariantMessage,
     UpdateVariantsByIdMessage,
@@ -114,6 +115,7 @@ export class IndexerController {
                     const batchIds = ids.slice(begin, end);
                     const batch = await this.connection.getRepository(ProductVariant).findByIds(batchIds, {
                         relations: variantRelations,
+                        where: { deletedAt: null },
                     });
                     const variants = this.hydrateVariants(ctx, batch);
                     await this.saveVariants(ctx.languageCode, ctx.channelId, variants);
@@ -189,6 +191,24 @@ export class IndexerController {
         });
     }
 
+    @MessagePattern(UpdateAssetMessage.pattern)
+    updateAsset(data: UpdateAssetMessage['data']): Observable<UpdateAssetMessage['response']> {
+        return asyncObservable(async () => {
+            const id = data.asset.id;
+            function getFocalPoint(point?: { x: number; y: number }) {
+                return point && point.x && point.y ? point : null;
+            }
+            const focalPoint = getFocalPoint(data.asset.focalPoint);
+            await this.connection
+                .getRepository(SearchIndexItem)
+                .update({ productAssetId: id }, { productPreviewFocalPoint: focalPoint });
+            await this.connection
+                .getRepository(SearchIndexItem)
+                .update({ productVariantAssetId: id }, { productVariantPreviewFocalPoint: focalPoint });
+            return true;
+        });
+    }
+
     private async updateProductInChannel(
         ctx: RequestContext,
         productId: ID,
@@ -202,6 +222,7 @@ export class IndexerController {
                 .getRepository(ProductVariant)
                 .findByIds(product.variants.map(v => v.id), {
                     relations: variantRelations,
+                    where: { deletedAt: null },
                 });
             if (product.enabled === false) {
                 updatedVariants.forEach(v => (v.enabled = false));
@@ -222,6 +243,7 @@ export class IndexerController {
     ): Promise<boolean> {
         const variants = await this.connection.getRepository(ProductVariant).findByIds(variantIds, {
             relations: variantRelations,
+            where: { deletedAt: null },
         });
         if (variants) {
             const updatedVariants = this.hydrateVariants(ctx, variants);
@@ -257,7 +279,8 @@ export class IndexerController {
         qb.leftJoin('variants.product', 'product')
             .leftJoin('product.channels', 'channel')
             .where('channel.id = :channelId', { channelId })
-            .andWhere('variants__product.deletedAt IS NULL');
+            .andWhere('variants__product.deletedAt IS NULL')
+            .andWhere('variants.deletedAt IS NULL');
         return qb;
     }
 
@@ -286,6 +309,12 @@ export class IndexerController {
                     productName: v.product.name,
                     description: v.product.description,
                     productVariantName: v.name,
+                    productAssetId: v.product.featuredAsset ? v.product.featuredAsset.id : null,
+                    productPreviewFocalPoint: v.product.featuredAsset
+                        ? v.product.featuredAsset.focalPoint
+                        : null,
+                    productVariantPreviewFocalPoint: v.featuredAsset ? v.featuredAsset.focalPoint : null,
+                    productVariantAssetId: v.featuredAsset ? v.featuredAsset.id : null,
                     productPreview: v.product.featuredAsset ? v.product.featuredAsset.preview : '',
                     productVariantPreview: v.featuredAsset ? v.featuredAsset.preview : '',
                     channelIds: v.product.channels.map(c => c.id as string),

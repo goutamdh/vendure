@@ -12,6 +12,7 @@ import {
     testSuccessfulPaymentMethod,
 } from './fixtures/test-payment-methods';
 import {
+    AttemptLogin,
     CreateAddressInput,
     GetCountryList,
     GetCustomer,
@@ -26,6 +27,7 @@ import {
     GetActiveOrderPayments,
     GetAvailableCountries,
     GetCustomerAddresses,
+    GetCustomerOrders,
     GetNextOrderStates,
     GetOrderByCode,
     GetShippingMethods,
@@ -36,6 +38,7 @@ import {
     TransitionToState,
 } from './graphql/generated-e2e-shop-types';
 import {
+    ATTEMPT_LOGIN,
     GET_COUNTRY_LIST,
     GET_CUSTOMER,
     GET_CUSTOMER_LIST,
@@ -47,6 +50,7 @@ import {
     ADJUST_ITEM_QUANTITY,
     GET_ACTIVE_ORDER,
     GET_ACTIVE_ORDER_ADDRESSES,
+    GET_ACTIVE_ORDER_ORDERS,
     GET_ACTIVE_ORDER_PAYMENTS,
     GET_AVAILABLE_COUNTRIES,
     GET_ELIGIBLE_SHIPPING_METHODS,
@@ -80,7 +84,7 @@ describe('Shop orders', () => {
         await server.init({
             initialData,
             productsCsvPath: path.join(__dirname, 'fixtures/e2e-products-full.csv'),
-            customerCount: 2,
+            customerCount: 3,
         });
         await adminClient.asSuperAdmin();
     }, TEST_SETUP_TIMEOUT_MS);
@@ -379,10 +383,13 @@ describe('Shop orders', () => {
         });
 
         it('customer default Addresses are not updated before payment', async () => {
-            // TODO: will need to be reworked for https://github.com/vendure-ecommerce/vendure/issues/98
-            const result = await shopClient.query<GetCustomerAddresses.Query>(GET_ACTIVE_ORDER_ADDRESSES);
+            const { activeOrder } = await shopClient.query<GetActiveOrder.Query>(GET_ACTIVE_ORDER);
+            const { customer } = await adminClient.query<GetCustomer.Query, GetCustomer.Variables>(
+                GET_CUSTOMER,
+                { id: activeOrder!.customer!.id },
+            );
 
-            expect(result.activeOrder!.customer!.addresses).toEqual([]);
+            expect(customer!.addresses).toEqual([]);
         });
 
         it('can transition to ArrangingPayment once Customer has been set', async () => {
@@ -872,6 +879,195 @@ describe('Shop orders', () => {
                     }, `You are not currently authorized to perform this action`),
                 );
             });
+        });
+    });
+
+    describe('order merging', () => {
+        let customers: GetCustomerList.Items[];
+
+        beforeAll(async () => {
+            const result = await adminClient.query<GetCustomerList.Query>(GET_CUSTOMER_LIST);
+            customers = result.customers.items;
+        });
+
+        it('merges guest order with no existing order', async () => {
+            await shopClient.asAnonymousUser();
+            const { addItemToOrder } = await shopClient.query<
+                AddItemToOrder.Mutation,
+                AddItemToOrder.Variables
+            >(ADD_ITEM_TO_ORDER, {
+                productVariantId: 'T_1',
+                quantity: 1,
+            });
+
+            expect(addItemToOrder!.lines.length).toBe(1);
+            expect(addItemToOrder!.lines[0].productVariant.id).toBe('T_1');
+
+            await shopClient.query<AttemptLogin.Mutation, AttemptLogin.Variables>(ATTEMPT_LOGIN, {
+                username: customers[1].emailAddress,
+                password: 'test',
+            });
+            const { activeOrder } = await shopClient.query<GetActiveOrder.Query>(GET_ACTIVE_ORDER);
+
+            expect(activeOrder!.lines.length).toBe(1);
+            expect(activeOrder!.lines[0].productVariant.id).toBe('T_1');
+        });
+
+        it('merges guest order with existing order', async () => {
+            await shopClient.asAnonymousUser();
+            const { addItemToOrder } = await shopClient.query<
+                AddItemToOrder.Mutation,
+                AddItemToOrder.Variables
+            >(ADD_ITEM_TO_ORDER, {
+                productVariantId: 'T_2',
+                quantity: 1,
+            });
+
+            expect(addItemToOrder!.lines.length).toBe(1);
+            expect(addItemToOrder!.lines[0].productVariant.id).toBe('T_2');
+
+            await shopClient.query<AttemptLogin.Mutation, AttemptLogin.Variables>(ATTEMPT_LOGIN, {
+                username: customers[1].emailAddress,
+                password: 'test',
+            });
+            const { activeOrder } = await shopClient.query<GetActiveOrder.Query>(GET_ACTIVE_ORDER);
+
+            expect(activeOrder!.lines.length).toBe(2);
+            expect(activeOrder!.lines[0].productVariant.id).toBe('T_1');
+            expect(activeOrder!.lines[1].productVariant.id).toBe('T_2');
+        });
+
+        /**
+         * See https://github.com/vendure-ecommerce/vendure/issues/263
+         */
+        it('does not merge when logging in to a different account (issue #263)', async () => {
+            await shopClient.query<AttemptLogin.Mutation, AttemptLogin.Variables>(ATTEMPT_LOGIN, {
+                username: customers[2].emailAddress,
+                password: 'test',
+            });
+            const { activeOrder } = await shopClient.query<GetActiveOrder.Query>(GET_ACTIVE_ORDER);
+
+            expect(activeOrder).toBeNull();
+        });
+
+        it('does not merge when logging back to other account (issue #263)', async () => {
+            const { addItemToOrder } = await shopClient.query<
+                AddItemToOrder.Mutation,
+                AddItemToOrder.Variables
+            >(ADD_ITEM_TO_ORDER, {
+                productVariantId: 'T_3',
+                quantity: 1,
+            });
+
+            await shopClient.query<AttemptLogin.Mutation, AttemptLogin.Variables>(ATTEMPT_LOGIN, {
+                username: customers[1].emailAddress,
+                password: 'test',
+            });
+            const { activeOrder } = await shopClient.query<GetActiveOrder.Query>(GET_ACTIVE_ORDER);
+
+            expect(activeOrder!.lines.length).toBe(2);
+            expect(activeOrder!.lines[0].productVariant.id).toBe('T_1');
+            expect(activeOrder!.lines[1].productVariant.id).toBe('T_2');
+        });
+    });
+
+    describe('security of customer data', () => {
+        let customers: GetCustomerList.Items[];
+
+        beforeAll(async () => {
+            const result = await adminClient.query<GetCustomerList.Query>(GET_CUSTOMER_LIST);
+            customers = result.customers.items;
+        });
+
+        it('cannot setCustomOrder to existing non-guest Customer', async () => {
+            await shopClient.asAnonymousUser();
+            const { addItemToOrder } = await shopClient.query<
+                AddItemToOrder.Mutation,
+                AddItemToOrder.Variables
+            >(ADD_ITEM_TO_ORDER, {
+                productVariantId: 'T_1',
+                quantity: 1,
+            });
+
+            try {
+                await shopClient.query<SetCustomerForOrder.Mutation, SetCustomerForOrder.Variables>(
+                    SET_CUSTOMER,
+                    {
+                        input: {
+                            emailAddress: customers[0].emailAddress,
+                            firstName: 'Evil',
+                            lastName: 'Hacker',
+                        },
+                    },
+                );
+                fail('Should have thrown');
+            } catch (e) {
+                expect(e.message).toContain(
+                    'Cannot use a registered email address for a guest order. Please log in first',
+                );
+            }
+            const { customer } = await adminClient.query<GetCustomer.Query, GetCustomer.Variables>(
+                GET_CUSTOMER,
+                {
+                    id: customers[0].id,
+                },
+            );
+            expect(customer!.firstName).not.toBe('Evil');
+            expect(customer!.lastName).not.toBe('Hacker');
+        });
+
+        it('guest cannot access Addresses of guest customer', async () => {
+            await shopClient.asAnonymousUser();
+            const { addItemToOrder } = await shopClient.query<
+                AddItemToOrder.Mutation,
+                AddItemToOrder.Variables
+            >(ADD_ITEM_TO_ORDER, {
+                productVariantId: 'T_1',
+                quantity: 1,
+            });
+
+            await shopClient.query<SetCustomerForOrder.Mutation, SetCustomerForOrder.Variables>(
+                SET_CUSTOMER,
+                {
+                    input: {
+                        emailAddress: 'test@test.com',
+                        firstName: 'Evil',
+                        lastName: 'Hacker',
+                    },
+                },
+            );
+
+            const { activeOrder } = await shopClient.query<GetCustomerAddresses.Query>(
+                GET_ACTIVE_ORDER_ADDRESSES,
+            );
+
+            expect(activeOrder!.customer!.addresses).toEqual([]);
+        });
+
+        it('guest cannot access Orders of guest customer', async () => {
+            await shopClient.asAnonymousUser();
+            const { addItemToOrder } = await shopClient.query<
+                AddItemToOrder.Mutation,
+                AddItemToOrder.Variables
+            >(ADD_ITEM_TO_ORDER, {
+                productVariantId: 'T_1',
+                quantity: 1,
+            });
+
+            await shopClient.query<SetCustomerForOrder.Mutation, SetCustomerForOrder.Variables>(
+                SET_CUSTOMER,
+                {
+                    input: {
+                        emailAddress: 'test@test.com',
+                        firstName: 'Evil',
+                        lastName: 'Hacker',
+                    },
+                },
+            );
+
+            const { activeOrder } = await shopClient.query<GetCustomerOrders.Query>(GET_ACTIVE_ORDER_ORDERS);
+
+            expect(activeOrder!.customer!.orders.items).toEqual([]);
         });
     });
 });

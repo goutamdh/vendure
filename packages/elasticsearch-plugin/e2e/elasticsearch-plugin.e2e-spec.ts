@@ -1,8 +1,7 @@
 /* tslint:disable:no-non-null-assertion */
 import { SortOrder } from '@vendure/common/lib/generated-types';
 import { pick } from '@vendure/common/lib/pick';
-import { DefaultLogger, LogLevel, mergeConfig } from '@vendure/core';
-import { facetValueCollectionFilter } from '@vendure/core/dist/config/collection/default-collection-filters';
+import { DefaultLogger, facetValueCollectionFilter, LogLevel, mergeConfig } from '@vendure/core';
 import { createTestEnvironment, E2E_DEFAULT_CHANNEL_TOKEN, SimpleGraphQLClient } from '@vendure/testing';
 import gql from 'graphql-tag';
 import path from 'path';
@@ -22,6 +21,7 @@ import {
     SearchFacetValues,
     SearchGetPrices,
     SearchInput,
+    UpdateAsset,
     UpdateCollection,
     UpdateProduct,
     UpdateProductVariants,
@@ -36,6 +36,7 @@ import {
     DELETE_PRODUCT,
     DELETE_PRODUCT_VARIANT,
     REMOVE_PRODUCT_FROM_CHANNEL,
+    UPDATE_ASSET,
     UPDATE_COLLECTION,
     UPDATE_PRODUCT,
     UPDATE_PRODUCT_VARIANTS,
@@ -45,11 +46,23 @@ import { ElasticsearchPlugin } from '../src/plugin';
 
 import { SEARCH_PRODUCTS_SHOP } from './../../core/e2e/graphql/shop-definitions';
 import { awaitRunningJobs } from './../../core/e2e/utils/await-running-jobs';
-import { GetJobInfo, JobState, Reindex } from './graphql/generated-e2e-elasticsearch-plugin-types';
+import {
+    GetJobInfo,
+    JobState,
+    Reindex,
+    SearchProductsAdmin,
+} from './graphql/generated-e2e-elasticsearch-plugin-types';
 
 describe('Elasticsearch plugin', () => {
     const { server, adminClient, shopClient } = createTestEnvironment(
         mergeConfig(testConfig, {
+            port: 4050,
+            workerOptions: {
+                options: {
+                    port: 4055,
+                },
+            },
+            logger: new DefaultLogger({ level: LogLevel.Info }),
             plugins: [
                 ElasticsearchPlugin.init({
                     indexPrefix: 'e2e-tests',
@@ -76,7 +89,7 @@ describe('Elasticsearch plugin', () => {
     });
 
     function doAdminSearchQuery(input: SearchInput) {
-        return adminClient.query<SearchProductsShop.Query, SearchProductsShop.Variables>(SEARCH_PRODUCTS, {
+        return adminClient.query<SearchProductsAdmin.Query, SearchProductsAdmin.Variables>(SEARCH_PRODUCTS, {
             input,
         });
     }
@@ -288,6 +301,8 @@ describe('Elasticsearch plugin', () => {
                 },
             });
 
+            await awaitRunningJobs(adminClient);
+
             const result = await shopClient.query<SearchFacetValues.Query, SearchFacetValues.Variables>(
                 SEARCH_GET_FACET_VALUES,
                 {
@@ -427,7 +442,7 @@ describe('Elasticsearch plugin', () => {
                     groupByProduct: false,
                 });
 
-                expect(search2.items.map(i => i.sku)).toEqual([
+                expect(search2.items.map(i => i.sku).sort()).toEqual([
                     'IHD455T2_updated',
                     'IHD455T3_updated',
                     'IHD455T4_updated',
@@ -444,18 +459,24 @@ describe('Elasticsearch plugin', () => {
                 });
                 await awaitRunningJobs(adminClient);
                 const result = await doAdminSearchQuery({ facetValueIds: ['T_2'], groupByProduct: true });
-                expect(result.search.items.map(i => i.productName)).toEqual([
-                    'Gaming PC',
+                expect(result.search.items.map(i => i.productName).sort()).toEqual([
                     'Clacky Keyboard',
-                    'USB Cable',
                     'Curvy Monitor',
+                    'Gaming PC',
                     'Hard Drive',
+                    'USB Cable',
                 ]);
             });
 
             it('updates index when a Product is deleted', async () => {
                 const { search } = await doAdminSearchQuery({ facetValueIds: ['T_2'], groupByProduct: true });
-                expect(search.items.map(i => i.productId)).toEqual(['T_3', 'T_5', 'T_6', 'T_2', 'T_4']);
+                expect(search.items.map(i => i.productId).sort()).toEqual([
+                    'T_2',
+                    'T_3',
+                    'T_4',
+                    'T_5',
+                    'T_6',
+                ]);
                 await adminClient.query<DeleteProduct.Mutation, DeleteProduct.Variables>(DELETE_PRODUCT, {
                     id: 'T_5',
                 });
@@ -464,7 +485,7 @@ describe('Elasticsearch plugin', () => {
                     facetValueIds: ['T_2'],
                     groupByProduct: true,
                 });
-                expect(search2.items.map(i => i.productId)).toEqual(['T_3', 'T_6', 'T_2', 'T_4']);
+                expect(search2.items.map(i => i.productId).sort()).toEqual(['T_2', 'T_3', 'T_4', 'T_6']);
             });
 
             it('updates index when a Collection is changed', async () => {
@@ -577,6 +598,69 @@ describe('Elasticsearch plugin', () => {
                         priceWithTax: { min: 194850, max: 344850 },
                     },
                 ]);
+            });
+
+            it('updates index when asset focalPoint is changed', async () => {
+                const { search: search1 } = await doAdminSearchQuery({
+                    term: 'laptop',
+                    groupByProduct: true,
+                    take: 1,
+                    sort: {
+                        name: SortOrder.ASC,
+                    },
+                });
+
+                expect(search1.items[0].productAsset!.id).toBe('T_1');
+                expect(search1.items[0].productAsset!.focalPoint).toBeNull();
+
+                await adminClient.query<UpdateAsset.Mutation, UpdateAsset.Variables>(UPDATE_ASSET, {
+                    input: {
+                        id: 'T_1',
+                        focalPoint: {
+                            x: 0.42,
+                            y: 0.42,
+                        },
+                    },
+                });
+
+                await awaitRunningJobs(adminClient);
+
+                const { search: search2 } = await doAdminSearchQuery({
+                    term: 'laptop',
+                    groupByProduct: true,
+                    take: 1,
+                    sort: {
+                        name: SortOrder.ASC,
+                    },
+                });
+
+                expect(search2.items[0].productAsset!.id).toBe('T_1');
+                expect(search2.items[0].productAsset!.focalPoint).toEqual({ x: 0.42, y: 0.42 });
+            });
+
+            it('does not include deleted ProductVariants in index', async () => {
+                const { search: s1 } = await doAdminSearchQuery({
+                    term: 'hard drive',
+                    groupByProduct: false,
+                });
+
+                const variantToDelete = s1.items.find(i => i.sku === 'IHD455T2_updated')!;
+
+                const { deleteProductVariant } = await adminClient.query<
+                    DeleteProductVariant.Mutation,
+                    DeleteProductVariant.Variables
+                >(DELETE_PRODUCT_VARIANT, { id: variantToDelete.productVariantId });
+
+                await awaitRunningJobs(adminClient);
+
+                const { search } = await adminClient.query<SearchGetPrices.Query, SearchGetPrices.Variables>(
+                    SEARCH_GET_PRICES,
+                    { input: { term: 'hard drive', groupByProduct: true } },
+                );
+                expect(search.items[0].price).toEqual({
+                    min: 7896,
+                    max: 13435,
+                });
             });
 
             it('returns disabled field when not grouped', async () => {
@@ -714,9 +798,25 @@ export const SEARCH_PRODUCTS = gql`
                 enabled
                 productId
                 productName
+                productAsset {
+                    id
+                    preview
+                    focalPoint {
+                        x
+                        y
+                    }
+                }
                 productPreview
                 productVariantId
                 productVariantName
+                productVariantAsset {
+                    id
+                    preview
+                    focalPoint {
+                        x
+                        y
+                    }
+                }
                 productVariantPreview
                 sku
             }

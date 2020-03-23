@@ -1,6 +1,6 @@
+/* tslint:disable:no-non-null-assertion */
 import { pick } from '@vendure/common/lib/pick';
-import { DefaultSearchPlugin, mergeConfig } from '@vendure/core';
-import { facetValueCollectionFilter } from '@vendure/core/dist/config/collection/default-collection-filters';
+import { DefaultSearchPlugin, facetValueCollectionFilter, mergeConfig } from '@vendure/core';
 import { createTestEnvironment, E2E_DEFAULT_CHANNEL_TOKEN, SimpleGraphQLClient } from '@vendure/testing';
 import gql from 'graphql-tag';
 import path from 'path';
@@ -19,9 +19,11 @@ import {
     LanguageCode,
     RemoveProductsFromChannel,
     SearchFacetValues,
+    SearchGetAssets,
     SearchGetPrices,
     SearchInput,
     SortOrder,
+    UpdateAsset,
     UpdateCollection,
     UpdateProduct,
     UpdateProductVariants,
@@ -36,6 +38,7 @@ import {
     DELETE_PRODUCT,
     DELETE_PRODUCT_VARIANT,
     REMOVE_PRODUCT_FROM_CHANNEL,
+    UPDATE_ASSET,
     UPDATE_COLLECTION,
     UPDATE_PRODUCT,
     UPDATE_PRODUCT_VARIANTS,
@@ -278,6 +281,8 @@ describe('Default search plugin', () => {
                     facetValueIds: ['T_1', 'T_2', createFacet.values[0].id],
                 },
             });
+
+            await awaitRunningJobs(adminClient);
 
             const result = await shopClient.query<SearchFacetValues.Query, SearchFacetValues.Variables>(
                 SEARCH_GET_FACET_VALUES,
@@ -570,6 +575,64 @@ describe('Default search plugin', () => {
                 ]);
             });
 
+            it('updates index when asset focalPoint is changed', async () => {
+                function doSearch() {
+                    return adminClient.query<SearchGetAssets.Query, SearchGetAssets.Variables>(
+                        SEARCH_GET_ASSETS,
+                        {
+                            input: {
+                                term: 'laptop',
+                                take: 1,
+                            },
+                        },
+                    );
+                }
+                const { search: search1 } = await doSearch();
+
+                expect(search1.items[0].productAsset!.id).toBe('T_1');
+                expect(search1.items[0].productAsset!.focalPoint).toBeNull();
+
+                await adminClient.query<UpdateAsset.Mutation, UpdateAsset.Variables>(UPDATE_ASSET, {
+                    input: {
+                        id: 'T_1',
+                        focalPoint: {
+                            x: 0.42,
+                            y: 0.42,
+                        },
+                    },
+                });
+
+                await awaitRunningJobs(adminClient);
+
+                const { search: search2 } = await doSearch();
+
+                expect(search2.items[0].productAsset!.id).toBe('T_1');
+                expect(search2.items[0].productAsset!.focalPoint).toEqual({ x: 0.42, y: 0.42 });
+            });
+
+            it('does not include deleted ProductVariants in index', async () => {
+                const { search: s1 } = await doAdminSearchQuery({
+                    term: 'hard drive',
+                    groupByProduct: false,
+                });
+
+                const { deleteProductVariant } = await adminClient.query<
+                    DeleteProductVariant.Mutation,
+                    DeleteProductVariant.Variables
+                >(DELETE_PRODUCT_VARIANT, { id: s1.items[0].productVariantId });
+
+                await awaitRunningJobs(adminClient);
+
+                const { search } = await adminClient.query<SearchGetPrices.Query, SearchGetPrices.Variables>(
+                    SEARCH_GET_PRICES,
+                    { input: { term: 'hard drive', groupByProduct: true } },
+                );
+                expect(search.items[0].price).toEqual({
+                    min: 7896,
+                    max: 13435,
+                });
+            });
+
             it('returns enabled field when not grouped', async () => {
                 const result = await doAdminSearchQuery({ groupByProduct: false, take: 3 });
                 expect(result.search.items.map(pick(['productVariantId', 'enabled']))).toEqual([
@@ -713,6 +776,35 @@ export const SEARCH_GET_FACET_VALUES = gql`
                 facetValue {
                     id
                     name
+                }
+            }
+        }
+    }
+`;
+
+export const SEARCH_GET_ASSETS = gql`
+    query SearchGetAssets($input: SearchInput!) {
+        search(input: $input) {
+            totalItems
+            items {
+                productId
+                productName
+                productVariantName
+                productAsset {
+                    id
+                    preview
+                    focalPoint {
+                        x
+                        y
+                    }
+                }
+                productVariantAsset {
+                    id
+                    preview
+                    focalPoint {
+                        x
+                        y
+                    }
                 }
             }
         }

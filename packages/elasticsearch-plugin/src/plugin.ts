@@ -1,4 +1,5 @@
 import {
+    AssetEvent,
     CollectionModificationEvent,
     DeepRequired,
     EventBus,
@@ -31,6 +32,8 @@ import { ElasticsearchOptions, mergeWithDefaults } from './options';
  * engine. This is a drop-in replacement for the DefaultSearchPlugin.
  *
  * ## Installation
+ *
+ * **Requires Elasticsearch v7.0 or higher.**
  *
  * `yarn add \@vendure/elasticsearch-plugin`
  *
@@ -250,6 +253,11 @@ export class ElasticsearchPlugin implements OnVendureBootstrap {
                 return this.elasticsearchIndexService.deleteVariant(event.ctx, event.variants).start();
             } else {
                 return this.elasticsearchIndexService.updateVariants(event.ctx, event.variants).start();
+            }
+        });
+        this.eventBus.ofType(AssetEvent).subscribe(event => {
+            if (event.type === 'updated') {
+                return this.elasticsearchIndexService.updateAsset(event.ctx, event.asset).start();
             }
         });
 
